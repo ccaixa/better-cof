@@ -4,9 +4,16 @@ import subprocess
 import math
 import shlex
 import winreg
+import urllib.request
+ 
 from PyQt5 import QtWidgets, QtCore, QtGui
 
 DEFAULT_DIR = r"C:\\Program Files (x86)\\Steam\\steamapps\\common\\Cry of Fear"
+BASE_RAW = "https://raw.githubusercontent.com/ccaixa/better-cof-bucket/refs/heads/main/"
+RINPUT_EXE_URL = BASE_RAW + "RInput.exe"
+RINPUT_DLL_URL = BASE_RAW + "RInput.dll"
+REBUILTSIMON_DLL_URL = BASE_RAW + "RebuiltSimon Build 112.dll"
+CRASHRPT_DLL_URL = BASE_RAW + "CrashRpt.dll"
 
 
 def dir_exists(path: str) -> bool:
@@ -243,6 +250,37 @@ class Launcher(QtWidgets.QWidget):
         cfg_v.addWidget(credits)
         tabs.addTab(tab_cfg, "Configuration")
 
+        tab_plugins = QtWidgets.QWidget()
+        pl_v = QtWidgets.QVBoxLayout(tab_plugins)
+        info = QtWidgets.QLabel("Plugins: detect, install, enable or disable.")
+        pl_v.addWidget(info)
+        grid = QtWidgets.QGridLayout()
+        rowp = 0
+        grid.addWidget(QtWidgets.QLabel("RInput"), rowp, 0)
+        self.lbl_rinput_status = QtWidgets.QLabel("Status: Unknown")
+        grid.addWidget(self.lbl_rinput_status, rowp, 1)
+        self.btn_rinput_toggle = QtWidgets.QPushButton("Enable")
+        self.btn_rinput_toggle.clicked.connect(lambda: self.on_plugin_action("rinput_toggle"))
+        grid.addWidget(self.btn_rinput_toggle, rowp, 2)
+        self.btn_rinput_install = QtWidgets.QPushButton("Install")
+        self.btn_rinput_install.clicked.connect(lambda: self.on_plugin_action("rinput_install"))
+        grid.addWidget(self.btn_rinput_install, rowp, 3); rowp += 1
+        grid.addWidget(QtWidgets.QLabel("RebuiltSimon"), rowp, 0)
+        self.lbl_rebuilt_status = QtWidgets.QLabel("Status: Unknown")
+        grid.addWidget(self.lbl_rebuilt_status, rowp, 1)
+        self.btn_rebuilt_toggle = QtWidgets.QPushButton("Enable")
+        self.btn_rebuilt_toggle.clicked.connect(lambda: self.on_plugin_action("rebuilt_toggle"))
+        grid.addWidget(self.btn_rebuilt_toggle, rowp, 2)
+        self.btn_rebuilt_install = QtWidgets.QPushButton("Install")
+        self.btn_rebuilt_install.clicked.connect(lambda: self.on_plugin_action("rebuilt_install"))
+        grid.addWidget(self.btn_rebuilt_install, rowp, 3); rowp += 1
+        pl_v.addLayout(grid)
+        detect_all = QtWidgets.QPushButton("Detect")
+        detect_all.clicked.connect(self._refresh_plugin_states)
+        pl_v.addWidget(detect_all)
+        pl_v.addStretch(1)
+        tabs.addTab(tab_plugins, "Plugins")
+
         footer_container = QtWidgets.QWidget()
         footer_container.setObjectName("FooterContainer")
         footer_container.setMaximumHeight(14)
@@ -262,6 +300,7 @@ class Launcher(QtWidgets.QWidget):
         self.chk_2dmenu.toggled.connect(lambda _: self._update_preview())
         self.chk_16bit.toggled.connect(lambda _: self._update_preview())
         self.chk_gl.toggled.connect(lambda _: self._update_preview())
+        self.chk_rawinput.toggled.connect(self.on_rawinput_toggled)
         self.chk_rawinput.toggled.connect(lambda _: self._update_preview())
         self.spin_heap.valueChanged.connect(lambda _: self._update_preview())
         self.edit_custom.textChanged.connect(lambda _: self._update_preview())
@@ -286,6 +325,11 @@ class Launcher(QtWidgets.QWidget):
         self._update_preview()
         self._load_settings()
         self._update_preview()
+        self._first_run_check()
+        try:
+            self._refresh_plugin_states()
+        except Exception:
+            pass
 
     def on_browse(self):
         start_dir = self.edit_dir.text().strip() or DEFAULT_DIR
@@ -330,12 +374,22 @@ class Launcher(QtWidgets.QWidget):
         self._write_cfg(dir_path)
         self._save_settings()
         flags = self._collect_flags(w, h)
-        args = [cof_path] + flags
+        rinput_exe = None
+        for name in ("RInput.exe", "rinput.exe"):
+            p = os.path.join(dir_path, name)
+            if file_exists(p):
+                rinput_exe = p
+                break
+        rinput_dll_candidates = [os.path.join(dir_path, "RInput.dll"), os.path.join(dir_path, "rinput.dll")]
+        rinput_ok = bool(rinput_exe) and any(file_exists(p) for p in rinput_dll_candidates)
+        args_main = [cof_path] + flags
         custom = self._parse_custom_args()
         if custom:
-            args.extend(custom)
+            args_main.extend(custom)
         try:
-            subprocess.Popen(args, cwd=dir_path)
+            subprocess.Popen(args_main, cwd=dir_path)
+            if getattr(self, "pl_rinput_enabled", False) and rinput_ok:
+                subprocess.Popen([rinput_exe, "cof.exe"], cwd=dir_path)
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to start the game.\n{e}")
 
@@ -429,7 +483,9 @@ class Launcher(QtWidgets.QWidget):
         if self.chk_2dmenu.isChecked():
             flags.append("-no3dmenu")
         flags.append("-16bpp" if self.chk_16bit.isChecked() else "-32bpp")
-        if not self.chk_rawinput.isChecked():
+        if self.chk_rawinput.isChecked():
+            flags.append("-noforcemparms")
+        else:
             flags.append("-noforcemaccel")
         aspect = (w / h) if h else 0
         if aspect >= 1.6:
@@ -454,8 +510,34 @@ class Launcher(QtWidgets.QWidget):
             w, h = 1920, 1080
         flags = self._collect_flags(w, h)
         custom = self._parse_custom_args()
+        dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
+        targets = self._plugin_targets(dir_path)
+        rinput_exe = None
+        for p in targets["rinput_exe"]:
+            if file_exists(p):
+                rinput_exe = os.path.basename(p)
+                break
+        rinput_dll_present = any(file_exists(p) for p in targets["rinput_dll_candidates"])
         parts = ["cof.exe"] + flags + custom
+        use_rinput = bool(getattr(self, "pl_rinput_enabled", False)) and bool(rinput_exe) and rinput_dll_present
+        if use_rinput:
+            parts += [rinput_exe, "cof.exe"]
         self.preview_args.setText(" ".join(parts))
+
+    def _first_run_check(self):
+        try:
+            dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
+            if not dir_exists(dir_path) or not file_exists(os.path.join(dir_path, "cof.exe")):
+                QtWidgets.QMessageBox.information(self, "First Run", "Select your Cry of Fear folder (cof.exe).")
+                self.on_browse()
+        except Exception:
+            pass
+
+    def on_rawinput_toggled(self, checked: bool):
+        try:
+            self._update_preview()
+        except Exception:
+            pass
 
     def _apply_shadow(self, widget: QtWidgets.QWidget):
         effect = QtWidgets.QGraphicsDropShadowEffect(self)
@@ -463,6 +545,92 @@ class Launcher(QtWidgets.QWidget):
         effect.setOffset(0, 4)
         effect.setColor(QtGui.QColor(0, 0, 0, 120))
         widget.setGraphicsEffect(effect)
+
+    def _plugin_targets(self, dir_path: str):
+        addons_dir = os.path.join(dir_path, "cryoffear", "addons")
+        cl_dlls_dir = os.path.join(dir_path, "cryoffear", "cl_dlls")
+        return {
+            "rinput_exe": [os.path.join(dir_path, "RInput.exe"), os.path.join(dir_path, "rinput.exe")],
+            "rinput_dll_candidates": [
+                os.path.join(dir_path, "RInput.dll"),
+                os.path.join(dir_path, "rinput.dll")
+            ],
+            "rebuilt_dll_candidates": [
+                os.path.join(addons_dir, "RebuiltSimon Build 112.dll"),
+                os.path.join(addons_dir, "RebuiltSimon.dll"),
+                os.path.join(addons_dir, "rebuiltsimon.dll")
+            ],
+            "addons_dir": addons_dir,
+            "cl_dlls_dir": cl_dlls_dir,
+            "crashrpt_dll": os.path.join(cl_dlls_dir, "CrashRpt.dll"),
+        }
+
+    def _safe_download(self, url: str, dest: str):
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            urllib.request.urlretrieve(url, dest)
+            return True
+        except Exception:
+            return False
+
+    def _refresh_plugin_states(self):
+        dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
+        targets = self._plugin_targets(dir_path)
+        rinput_exe_present = any(file_exists(p) for p in targets["rinput_exe"])
+        rinput_dll_present = any(file_exists(p) for p in targets["rinput_dll_candidates"])
+        rinput_installed = rinput_exe_present and rinput_dll_present
+        self.lbl_rinput_status.setText("Status: Installed" if rinput_installed else "Status: Missing")
+        self.btn_rinput_install.setText("Installed" if rinput_installed else "Install")
+        self.btn_rinput_install.setEnabled(not rinput_installed)
+        if getattr(self, "pl_rinput_enabled", False):
+            self.btn_rinput_toggle.setText("Disable")
+        else:
+            self.btn_rinput_toggle.setText("Enable")
+        os.makedirs(targets["addons_dir"], exist_ok=True)
+        os.makedirs(targets["cl_dlls_dir"], exist_ok=True)
+        rebuilt_present = any(file_exists(p) for p in targets["rebuilt_dll_candidates"]) or (
+            dir_exists(targets["addons_dir"]) and any(
+                ("rebuild" in fn.lower() and "simon" in fn.lower() and fn.lower().endswith(".dll"))
+                for fn in os.listdir(targets["addons_dir"]) )
+        )
+        crash_present = file_exists(targets["crashrpt_dll"]) or (
+            dir_exists(targets["cl_dlls_dir"]) and any(fn.lower() == "crashrpt.dll" for fn in os.listdir(targets["cl_dlls_dir"]))
+        )
+        rebuilt_installed = rebuilt_present and crash_present
+        self.lbl_rebuilt_status.setText("Status: Installed" if rebuilt_installed else "Status: Missing")
+        self.btn_rebuilt_install.setText("Installed" if rebuilt_installed else "Install")
+        self.btn_rebuilt_install.setEnabled(not rebuilt_installed)
+        if getattr(self, "pl_rebuilt_enabled", False):
+            self.btn_rebuilt_toggle.setText("Disable")
+        else:
+            self.btn_rebuilt_toggle.setText("Enable")
+
+    def on_plugin_action(self, which: str):
+        dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
+        targets = self._plugin_targets(dir_path)
+        if which == "rinput_install":
+            self._safe_download(RINPUT_EXE_URL, targets["rinput_exe"][0])
+            dll_dest = targets["rinput_dll_candidates"][0]
+            self._safe_download(RINPUT_DLL_URL, dll_dest)
+        elif which == "rebuilt_install":
+            os.makedirs(targets["addons_dir"], exist_ok=True)
+            os.makedirs(targets["cl_dlls_dir"], exist_ok=True)
+            rebuilt_dest = os.path.join(targets["addons_dir"], "RebuiltSimon.dll")
+            self._safe_download(REBUILTSIMON_DLL_URL, rebuilt_dest)
+            self._safe_download(CRASHRPT_DLL_URL, targets["crashrpt_dll"])
+        elif which == "rinput_toggle":
+            self.pl_rinput_enabled = not getattr(self, "pl_rinput_enabled", False)
+            try:
+                self._save_settings()
+            except Exception:
+                pass
+        elif which == "rebuilt_toggle":
+            self.pl_rebuilt_enabled = not getattr(self, "pl_rebuilt_enabled", False)
+            try:
+                self._save_settings()
+            except Exception:
+                pass
+        self._refresh_plugin_states()
 
     def _set_icon(self):
         base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -503,6 +671,12 @@ class Launcher(QtWidgets.QWidget):
         self.chk_rawinput.setChecked(get("raw", self.chk_rawinput.isChecked(), "bool"))
         self.spin_heap.setValue(get("heap", self.spin_heap.value(), "int"))
         self.edit_custom.setText(get("custom", self.edit_custom.text()))
+        try:
+            self.pl_rinput_enabled = get("pl_rinput", False, "bool")
+            self.pl_rebuilt_enabled = get("pl_rebuilt", False, "bool")
+        except Exception:
+            self.pl_rinput_enabled = False
+            self.pl_rebuilt_enabled = False
         self.adv_enabled = get("adv_enabled", self.adv_enabled, "bool")
         self.adv_name.setText(get("adv_name", self.adv_name.text()))
         self.adv_language.setValue(get("adv_language", self.adv_language.value() if hasattr(self.adv_language, 'value') else 0, "int"))
@@ -557,6 +731,11 @@ class Launcher(QtWidgets.QWidget):
         set("raw", self.chk_rawinput.isChecked())
         set("heap", int(self.spin_heap.value()))
         set("custom", self.edit_custom.text())
+        try:
+            set("pl_rinput", bool(getattr(self, "pl_rinput_enabled", False)))
+            set("pl_rebuilt", bool(getattr(self, "pl_rebuilt_enabled", False)))
+        except Exception:
+            pass
         self.adv_enabled = bool(self.chk_adv_enabled.isChecked())
         set("adv_enabled", self.adv_enabled)
         set("adv_name", self.adv_name.text())
@@ -649,8 +828,10 @@ class Launcher(QtWidgets.QWidget):
                 lines.append(f"cl_bloodeffects {1 if self.adv_bloodeffects.isChecked() else 0}")
                 lines.append(f"gl_posteffects {1 if self.adv_posteffects.isChecked() else 0}")
                 lines.append(f"cl_cameraeffect {1 if self.adv_cameraeffect.isChecked() else 0}")
+                lines.append("r_dynamic 1")
+                lines.append("gl_overbright 0")
             else:
-                lines = []
+                lines = ["r_dynamic 1", "gl_overbright 0"]
             with open(cfg_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
         except Exception:
