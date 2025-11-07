@@ -489,9 +489,7 @@ class Launcher(QtWidgets.QWidget):
             flags.append("-noforcemparms")
         else:
             flags.append("-noforcemaccel")
-        aspect = (w / h) if h else 0
-        if aspect >= 1.6:
-            flags.append("-widescreen")
+        # removed -widescreen argument because it doesn't exist
         flags += ["+exec", "bc_advancedsettings.cfg"]
         return flags
 
@@ -808,7 +806,8 @@ class Launcher(QtWidgets.QWidget):
             if self.chk_adv_enabled.isChecked():
                 nm = (self.adv_name.text() or "").strip()
                 if nm:
-                    lines.append(f"name {nm}")
+                    safe_nm = nm.replace('""', '\\"')
+                    lines.append(f'name "{safe_nm}"')
                 lines.append(f"cl_coop_language {int(self.adv_language.value())}")
                 lines.append(f"gl_brightness {self.adv_brightness.value():.2f}")
                 lines.append(f"gl_contrast {self.adv_contrast.value():.2f}")
