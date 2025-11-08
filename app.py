@@ -544,8 +544,13 @@ class Launcher(QtWidgets.QWidget):
             flags.append("-noforcemparms")
         else:
             flags.append("-noforcemaccel")
+<<<<<<< HEAD
         if self.chk_adv_enabled.isChecked():
             flags += ["+exec", "bc_advancedsettings.cfg"]
+=======
+        # removed -widescreen argument because it doesn't exist
+        flags += ["+exec", "bc_advancedsettings.cfg"]
+>>>>>>> c42563e5e3d06d1d5ffcdf064ad75ec3c1b4d720
         return flags
 
     def _parse_custom_args(self):
