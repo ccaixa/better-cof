@@ -1,10 +1,15 @@
 import os
 import sys
 import subprocess
-import math
 import shlex
 import winreg
 import urllib.request
+
+if getattr(sys, 'frozen', False):
+    try:
+        os.chdir(os.path.dirname(sys.executable))
+    except Exception:
+        pass
 
 from PyQt5 import QtWidgets, QtCore, QtGui
 
@@ -66,17 +71,6 @@ class Launcher(QtWidgets.QWidget):
 
         tab_main = QtWidgets.QWidget()
         main_v = QtWidgets.QVBoxLayout(tab_main)
-
-        gb_dir = QtWidgets.QGroupBox("Game Directory")
-        dir_layout = QtWidgets.QHBoxLayout(gb_dir)
-        self.edit_dir = QtWidgets.QLineEdit(DEFAULT_DIR)
-        self.edit_dir.setPlaceholderText("Path to Cry of Fear folder")
-        self.btn_browse = QtWidgets.QPushButton("Browse...")
-        self.btn_browse.clicked.connect(self.on_browse)
-        dir_layout.addWidget(self.edit_dir)
-        dir_layout.addWidget(self.btn_browse)
-        self._apply_shadow(gb_dir)
-        main_v.addWidget(gb_dir)
 
         gb_res = QtWidgets.QGroupBox("Resolution")
         res_grid = QtWidgets.QGridLayout(gb_res)
@@ -239,7 +233,18 @@ class Launcher(QtWidgets.QWidget):
 
         tab_cfg = QtWidgets.QWidget()
         cfg_v = QtWidgets.QVBoxLayout(tab_cfg)
-        
+
+        gb_dir = QtWidgets.QGroupBox("Game Directory")
+        dir_layout = QtWidgets.QHBoxLayout(gb_dir)
+        self.edit_dir = QtWidgets.QLineEdit(DEFAULT_DIR)
+        self.edit_dir.setPlaceholderText("Path to Cry of Fear folder")
+        self.btn_browse = QtWidgets.QPushButton("Browse...")
+        self.btn_browse.clicked.connect(self.on_browse)
+        dir_layout.addWidget(self.edit_dir)
+        dir_layout.addWidget(self.btn_browse)
+        self._apply_shadow(gb_dir)
+        cfg_v.addWidget(gb_dir)
+
         self.btn_save_cfg = QtWidgets.QPushButton("Save launcher configuration")
         self.btn_reset_cfg = QtWidgets.QPushButton("Reset to defaults")
         self.btn_save_cfg.clicked.connect(self._save_settings)
@@ -332,6 +337,10 @@ class Launcher(QtWidgets.QWidget):
         self._update_preview()
         self._load_settings()
         self._update_preview()
+        try:
+            self._first_run_welcome()
+        except Exception:
+            pass
         self._first_run_check()
         try:
             self._refresh_plugin_states()
@@ -353,6 +362,12 @@ class Launcher(QtWidgets.QWidget):
                 self.edit_dir.setText(os.path.dirname(fn))
             else:
                 self.edit_dir.setText(os.path.dirname(fn))
+            try:
+                dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
+                if file_exists(os.path.join(dir_path, "cof.exe")):
+                    self._set_first_run_done()
+            except Exception:
+                pass
 
     def on_preset_changed(self, text: str):
         try:
@@ -365,6 +380,12 @@ class Launcher(QtWidgets.QWidget):
 
     def on_launch(self):
         dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
+        dir_path = os.path.normpath(dir_path)
+        if getattr(sys, 'frozen', False):
+            try:
+                os.chdir(dir_path)
+            except Exception:
+                pass
         try:
             self._log("Starting game...")
         except Exception:
@@ -399,53 +420,32 @@ class Launcher(QtWidgets.QWidget):
         rinput_ok = bool(rinput_exe) and any(file_exists(p) for p in rinput_dll_candidates)
         custom = self._parse_custom_args()
         try:
-            exe_path = os.path.join(dir_path, "cof.exe")
-            cmd = [exe_path] + flags + custom
+            cof_path = os.path.join(dir_path, "cof.exe")
+            full_args = flags + custom
 
-            
-            self._write_cfg(dir_path)
-            try:
-                self._update_rebuilt_plugin()
-            except Exception:
-                pass
-
-            
-            try:
-                crash_dest = os.path.join(dir_path, "cryoffear", "cl_dlls", "CrashRpt.dll")
-                os.makedirs(os.path.dirname(crash_dest), exist_ok=True)
-                self._log("Ensuring CrashRpt.dll in cl_dlls...")
-                self._safe_download(CRASHRPT_DLL_URL, crash_dest)
-            except Exception as e:
-                self._log(f"Failed to ensure CrashRpt.dll: {e}")
-
-            
-            bat_path = os.path.join(dir_path, "bettercof_run_tmp.bat")
-            use_rinput = bool(getattr(self, "pl_rinput_enabled", False)) and rinput_ok
-            if use_rinput:
-            
-                cmd_line = f'"{rinput_exe}" "{exe_path}" ' + " ".join(flags + custom)
-            else:
-                cmd_line = f'"{exe_path}" ' + " ".join(flags + custom)
-            bat_lines = [
-                "@echo off",
-                f"cd /d \"{dir_path}\"",
-                cmd_line,
-                "exit",
-            ]
-            try:
-                with open(bat_path, "w", encoding="utf-8", newline="\r\n") as f:
-                    f.write("\r\n".join(bat_lines))
-                self._log(f"Launching via temporary .bat: {cmd_line}")
-                subprocess.Popen(["cmd.exe", "/c", bat_path], cwd=dir_path, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(self, "Error", f"Failed to start the game.\n{e}")
-                self._log("Launch failed")
-                return
-            
-            try:
-                QtCore.QTimer.singleShot(5000, lambda: (os.path.isfile(bat_path) and os.remove(bat_path)))
-            except Exception:
-                pass
+            cmd = [cof_path] + full_args
+            self._log(f"Launching: {' '.join(cmd)}")
+            env = None
+            if getattr(sys, 'frozen', False):
+                env = os.environ.copy()
+                game_dir = dir_path
+                cl_dlls = os.path.join(game_dir, "cryoffear", "cl_dlls")
+                addons_dir = os.path.join(game_dir, "cryoffear", "addons")
+                new_path = game_dir
+                if os.path.isdir(cl_dlls):
+                    new_path = cl_dlls + os.pathsep + new_path
+                if os.path.isdir(addons_dir):
+                    new_path = addons_dir + os.pathsep + new_path
+                current_path = env.get("PATH", "")
+                if new_path not in current_path:
+                    env["PATH"] = new_path + os.pathsep + current_path
+            CREATE_NEW_CONSOLE = 0x00000010
+            subprocess.Popen(
+                cmd,
+                cwd=dir_path,
+                creationflags=CREATE_NEW_CONSOLE,
+                env=env
+            )
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to start the game.\n{e}")
             self._log("Launch failed")
@@ -529,7 +529,6 @@ class Launcher(QtWidgets.QWidget):
     def _collect_flags(self, w: int, h: int):
         renderer_flag = "-gl" if self.chk_gl.isChecked() else "-hw"
         flags = [
-            "-basedir", "cryoffear",
             "-game", "cryoffear",
             renderer_flag,
             "-heapsize", str(self.spin_heap.value()),
@@ -567,29 +566,42 @@ class Launcher(QtWidgets.QWidget):
         custom = self._parse_custom_args()
         dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
         targets = self._plugin_targets(dir_path)
-        rinput_basename = None
-        rinput_full = None
-        for p in targets["rinput_exe"]:
-            if file_exists(p):
-                rinput_basename = os.path.basename(p)
-                rinput_full = p
-                break
-        rinput_dll_present = any(file_exists(p) for p in targets["rinput_dll_candidates"])
-        use_rinput = bool(getattr(self, "pl_rinput_enabled", False)) and bool(rinput_full) and rinput_dll_present
-        if use_rinput:
-            parts = [rinput_basename, "cof.exe"] + flags + custom
-        else:
-            parts = ["cof.exe"] + flags + custom
+        def _q(a: str) -> str:
+            a = a or ""
+            if " " in a and not (a.startswith('"') and a.endswith('"')):
+                return f'"{a}"'
+            return a
+        parts = ["cof.exe"] + [_q(a) for a in (flags + custom)]
         self.preview_args.setText(" ".join(parts))
 
     def _first_run_check(self):
         try:
+            if bool(getattr(self, "first_run_done", False)):
+                return
             dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
-            if not dir_exists(dir_path) or not file_exists(os.path.join(dir_path, "cof.exe")):
-                QtWidgets.QMessageBox.information(self, "First Run", "Select your Cry of Fear folder (cof.exe).")
+            if not (dir_exists(dir_path) and file_exists(os.path.join(dir_path, "cof.exe"))):
+                QtWidgets.QMessageBox.information(self, "Path required", "Select the Cry of Fear folder (cof.exe).")
                 self.on_browse()
+                dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
+                if dir_exists(dir_path) and file_exists(os.path.join(dir_path, "cof.exe")):
+                    self._set_first_run_done()
         except Exception:
             pass
+
+    def _first_run_welcome(self):
+        if not bool(getattr(self, "first_run_done", False)):
+            QtWidgets.QMessageBox.information(
+                self,
+                "Welcome",
+                "Welcome to BetterCof. Select the game folder (cof.exe)."
+            )
+            self.on_browse()
+            try:
+                dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
+                if dir_exists(dir_path) and file_exists(os.path.join(dir_path, "cof.exe")):
+                    self._set_first_run_done()
+            except Exception:
+                pass
 
     def on_rawinput_toggled(self, checked: bool):
         try:
@@ -618,6 +630,9 @@ class Launcher(QtWidgets.QWidget):
     def _plugin_targets(self, dir_path: str):
         addons_dir = os.path.join(dir_path, "cryoffear", "addons")
         cl_dlls_dir = os.path.join(dir_path, "cryoffear", "cl_dlls")
+        disabled_root = os.path.join(dir_path, "cryoffear", "_disabled")
+        disabled_addons = os.path.join(disabled_root, "addons")
+        disabled_cl_dlls = os.path.join(disabled_root, "cl_dlls")
         return {
             "rinput_exe": [os.path.join(dir_path, "RInput.exe"), os.path.join(dir_path, "rinput.exe")],
             "rinput_dll_candidates": [
@@ -632,6 +647,9 @@ class Launcher(QtWidgets.QWidget):
             "addons_dir": addons_dir,
             "cl_dlls_dir": cl_dlls_dir,
             "crashrpt_dll": os.path.join(cl_dlls_dir, "CrashRpt.dll"),
+            "disabled_root": disabled_root,
+            "disabled_addons": disabled_addons,
+            "disabled_cl_dlls": disabled_cl_dlls,
         }
 
     def _safe_download(self, url: str, dest: str):
@@ -652,6 +670,25 @@ class Launcher(QtWidgets.QWidget):
                 self._log(f"Download failed: {os.path.basename(dest)}")
             except Exception:
                 pass
+            return False
+
+    def _safe_move(self, src: str, dst_dir: str):
+        try:
+            if not file_exists(src):
+                return False
+            os.makedirs(dst_dir, exist_ok=True)
+            dst = os.path.join(dst_dir, os.path.basename(src))
+            try:
+                os.replace(src, dst)
+            except Exception:
+                try:
+                    import shutil
+                    shutil.copy2(src, dst)
+                    os.remove(src)
+                except Exception:
+                    return False
+            return True
+        except Exception:
             return False
 
     def _refresh_plugin_states(self):
@@ -691,51 +728,7 @@ class Launcher(QtWidgets.QWidget):
             pass
 
     def _update_rebuilt_plugin(self):
-        try:
-            dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
-            metamod_dir = os.path.join(dir_path, "cryoffear", "addons", "metamod")
-            plugins_ini = os.path.join(metamod_dir, "plugins.ini")
-            desired = "win32 addons/rebuiltsimon.dll"
-            os.makedirs(metamod_dir, exist_ok=True)
-            lines = []
-            if file_exists(plugins_ini):
-                try:
-                    with open(plugins_ini, "r", encoding="utf-8") as f:
-                        lines = f.read().splitlines()
-                except Exception as e:
-                    self._log(f"Failed to read plugins.ini: {e}")
-                    lines = []
-            enabled = bool(getattr(self, "pl_rebuilt_enabled", False))
-            found_uncommented = False
-            found_commented = False
-            new_lines = []
-            for ln in lines:
-                norm = ln.strip()
-                base = norm.lstrip(";").strip().lower()
-                if base == desired.lower():
-                    if enabled:
-                        new_lines.append(desired)
-                        found_uncommented = True
-                    else:
-                        new_lines.append(";" + desired)
-                        found_commented = True
-                else:
-                    new_lines.append(ln)
-            if enabled and not found_uncommented:
-                new_lines.append(desired)
-            if not enabled and not found_commented:
-                new_lines.append(";" + desired)
-            try:
-                with open(plugins_ini, "w", encoding="utf-8", newline="\r\n") as f:
-                    f.write("\r\n".join(new_lines))
-                self._log(f"Metamod plugins.ini updated: RebuiltSimon {'enabled' if enabled else 'disabled'}")
-            except Exception as e:
-                self._log(f"Failed to write plugins.ini: {e}")
-        except Exception:
-            try:
-                self._log("Failed to update RebuiltSimon in Metamod")
-            except Exception:
-                pass
+        pass
 
     def on_plugin_action(self, which: str):
         dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
@@ -763,17 +756,65 @@ class Launcher(QtWidgets.QWidget):
             except Exception:
                 pass
         elif which == "rinput_toggle":
-            self.pl_rinput_enabled = not getattr(self, "pl_rinput_enabled", False)
-            self._log(f"RInput {'enabled' if self.pl_rinput_enabled else 'disabled'}")
+            currently_enabled = bool(getattr(self, "pl_rinput_enabled", False))
+            enable_next = not currently_enabled
+            exe_src = next((p for p in targets["rinput_exe"] if file_exists(p)), None)
+            dll_src = next((p for p in targets["rinput_dll_candidates"] if file_exists(p)), None)
+            if enable_next:
+                moved_any = False
+                for base in ["RInput.exe", "rinput.exe", "RInput.dll", "rinput.dll"]:
+                    src = os.path.join(targets["disabled_root"], base)
+                    dest_dir = dir_path
+                    if file_exists(src):
+                        if self._safe_move(src, dest_dir):
+                            moved_any = True
+                if moved_any:
+                    self._log("RInput restored from _disabled")
+            else:
+                moved_any = False
+                if exe_src and self._safe_move(exe_src, targets["disabled_root"]):
+                    moved_any = True
+                if dll_src and self._safe_move(dll_src, targets["disabled_root"]):
+                    moved_any = True
+                if moved_any:
+                    self._log("RInput moved to _disabled")
+            self.pl_rinput_enabled = enable_next
             try:
                 self._save_settings()
             except Exception:
                 pass
         elif which == "rebuilt_toggle":
-            self.pl_rebuilt_enabled = not getattr(self, "pl_rebuilt_enabled", False)
-            self._log(f"Rebuilt Simon {'enabled' if self.pl_rebuilt_enabled else 'disabled'}")
+            currently_enabled = bool(getattr(self, "pl_rebuilt_enabled", False))
+            enable_next = not currently_enabled
+            os.makedirs(targets["addons_dir"], exist_ok=True)
+            os.makedirs(targets["cl_dlls_dir"], exist_ok=True)
+            os.makedirs(targets["disabled_addons"], exist_ok=True)
+            os.makedirs(targets["disabled_cl_dlls"], exist_ok=True)
+            active_rebuilt = next((p for p in targets["rebuilt_dll_candidates"] if file_exists(p)), None)
+            crash_dll = targets["crashrpt_dll"] if file_exists(targets["crashrpt_dll"]) else None
+            if enable_next:
+                restored_any = False
+                for base in ["rebuiltsimon.dll", "RebuiltSimon.dll", "RebuiltSimon Build 112.dll"]:
+                    src = os.path.join(targets["disabled_addons"], base)
+                    if file_exists(src):
+                        if self._safe_move(src, targets["addons_dir"]):
+                            restored_any = True
+                cr_src = os.path.join(targets["disabled_cl_dlls"], "CrashRpt.dll")
+                if file_exists(cr_src):
+                    if self._safe_move(cr_src, targets["cl_dlls_dir"]):
+                        restored_any = True
+                if restored_any:
+                    self._log("Rebuilt Simon restored from _disabled")
+            else:
+                moved_any = False
+                if active_rebuilt and self._safe_move(active_rebuilt, targets["disabled_addons"]):
+                    moved_any = True
+                if crash_dll and self._safe_move(crash_dll, targets["disabled_cl_dlls"]):
+                    moved_any = True
+                if moved_any:
+                    self._log("Rebuilt Simon moved to _disabled")
+            self.pl_rebuilt_enabled = enable_next
             try:
-                self._update_rebuilt_plugin()
                 self._save_settings()
             except Exception:
                 pass
@@ -787,6 +828,15 @@ class Launcher(QtWidgets.QWidget):
 
     def _reg_path(self):
         return r"Software\\BetterCof"
+
+    def _set_first_run_done(self):
+        try:
+            k = winreg.CreateKey(winreg.HKEY_CURRENT_USER, self._reg_path())
+            winreg.SetValueEx(k, "first_run_done", 0, winreg.REG_DWORD, 1)
+            winreg.CloseKey(k)
+            self.first_run_done = True
+        except Exception:
+            pass
 
     def _load_settings(self):
         try:
@@ -808,6 +858,10 @@ class Launcher(QtWidgets.QWidget):
                 return str(v)
             except Exception:
                 return default
+        try:
+            self.first_run_done = get("first_run_done", False, "bool")
+        except Exception:
+            self.first_run_done = False
         self.edit_dir.setText(get("dir", self.edit_dir.text()))
         self.edit_w.setText(str(get("w", int(self.edit_w.text()), "int")))
         self.edit_h.setText(str(get("h", int(self.edit_h.text()), "int")))
@@ -853,10 +907,6 @@ class Launcher(QtWidgets.QWidget):
             winreg.CloseKey(k)
         except Exception:
             pass
-        try:
-            self._update_rebuilt_plugin()
-        except Exception:
-            pass
 
     def _save_settings(self):
         try:
@@ -883,10 +933,6 @@ class Launcher(QtWidgets.QWidget):
         set("raw", self.chk_rawinput.isChecked())
         set("heap", int(self.spin_heap.value()))
         set("custom", self.edit_custom.text())
-        try:
-        
-        except Exception:
-            pass
         try:
             set("pl_rinput", bool(getattr(self, "pl_rinput_enabled", False)))
             set("pl_rebuilt", bool(getattr(self, "pl_rebuilt_enabled", False)))
