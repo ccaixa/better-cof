@@ -4,6 +4,7 @@ import subprocess
 import shlex
 import winreg
 import urllib.request
+import tempfile
 
 if getattr(sys, 'frozen', False):
     try:
@@ -14,11 +15,13 @@ if getattr(sys, 'frozen', False):
 from PyQt5 import QtWidgets, QtCore, QtGui
 
 DEFAULT_DIR = r"C:\\Program Files (x86)\\Steam\\steamapps\\common\\Cry of Fear"
+VERSION = "0.3"
 BASE_RAW = "https://raw.githubusercontent.com/ccaixa/better-cof-bucket/refs/heads/main/"
 RINPUT_EXE_URL = BASE_RAW + "RInput.exe"
 RINPUT_DLL_URL = BASE_RAW + "RInput.dll"
 REBUILTSIMON_DLL_URL = BASE_RAW + "RebuiltSimon.dll"
 CRASHRPT_DLL_URL = BASE_RAW + "CrashRpt.dll"
+VERSION_URL = BASE_RAW + "version.txt"
 
 
 def dir_exists(path: str) -> bool:
@@ -299,7 +302,7 @@ class Launcher(QtWidgets.QWidget):
         self.footer_log.setAlignment(QtCore.Qt.AlignLeft)
         footer.addWidget(self.footer_log)
         footer.addStretch(1)
-        footer_lbl = QtWidgets.QLabel("BetterCof — Beta 0.1 — developed by caixa — special thanks to ntxn")
+        footer_lbl = QtWidgets.QLabel(f"BetterCof — Version {VERSION} — developed by caixa — special thanks to ntxn")
         footer_lbl.setObjectName("FooterLabel")
         footer_lbl.setAlignment(QtCore.Qt.AlignRight)
         footer.addWidget(footer_lbl)
@@ -344,6 +347,10 @@ class Launcher(QtWidgets.QWidget):
         self._first_run_check()
         try:
             self._refresh_plugin_states()
+        except Exception:
+            pass
+        try:
+            QtCore.QTimer.singleShot(800, self._check_for_update)
         except Exception:
             pass
 
@@ -544,7 +551,7 @@ class Launcher(QtWidgets.QWidget):
         else:
             flags.append("-noforcemaccel")
         if self.chk_adv_enabled.isChecked():
-            flags += ["+exec", "bc_advancedsettings.cfg"]
+            flags += ["-exec", "bc_advancedsettings.cfg"]
         return flags
 
     def _parse_custom_args(self):
@@ -690,6 +697,79 @@ class Launcher(QtWidgets.QWidget):
             return True
         except Exception:
             return False
+
+    def _is_newer_version(self, remote: str, local: str) -> bool:
+        try:
+            def p(v):
+                return [int(x) for x in v.strip().split(".") if x.strip().isdigit()]
+            rv = p(remote)
+            lv = p(local)
+            return rv > lv
+        except Exception:
+            return False
+
+    def _check_for_update(self):
+        try:
+            if not getattr(sys, "frozen", False):
+                return
+            with urllib.request.urlopen(VERSION_URL, timeout=4) as r:
+                txt = r.read().decode("utf-8", errors="ignore")
+            remote_v = None
+            latest_url = None
+            for line in txt.splitlines():
+                s = line.strip()
+                if s.lower().startswith("version:"):
+                    remote_v = s.split(":", 1)[1].strip()
+                elif s.lower().startswith("latest:"):
+                    latest_url = s.split(":", 1)[1].strip().strip("`")
+            if remote_v and latest_url and self._is_newer_version(remote_v, VERSION):
+                res = QtWidgets.QMessageBox.question(
+                    self,
+                    "Update Available",
+                    "A new update is available. Do you want to update the launcher?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.Yes
+                )
+                if res == QtWidgets.QMessageBox.Yes:
+                    self._download_and_swap(latest_url)
+        except Exception:
+            pass
+
+    def _download_and_swap(self, url: str):
+        try:
+            exe_path = sys.executable
+            base_dir = os.path.dirname(exe_path)
+            new_path = os.path.join(base_dir, "BetterCof_new.exe")
+            ok = self._safe_download(url, new_path)
+            if ok and os.path.isfile(new_path):
+                self._invoke_updater(exe_path, new_path)
+        except Exception:
+            pass
+
+    def _invoke_updater(self, old_path: str, new_path: str):
+        try:
+            base_dir = os.path.dirname(old_path)
+            bat_path = os.path.join(tempfile.gettempdir(), "bettercof_update.bat")
+            lines = []
+            lines.append("@echo off")
+            lines.append("setlocal enableextensions")
+            lines.append("set OLD=\"" + old_path + "\"")
+            lines.append("set NEW=\"" + new_path + "\"")
+            lines.append(":loop")
+            lines.append("del %OLD% >nul 2>nul")
+            lines.append("if exist %OLD% (")
+            lines.append("  timeout /t 1 /nobreak >nul")
+            lines.append("  goto loop")
+            lines.append(")")
+            lines.append("move /y %NEW% %OLD% >nul 2>nul")
+            lines.append("start \"\" %OLD%")
+            lines.append("del \"%~f0\"")
+            with open(bat_path, "w", encoding="utf-8") as f:
+                f.write("\r\n".join(lines) + "\r\n")
+            subprocess.Popen(["cmd", "/c", "start", "/min", bat_path])
+            QtCore.QTimer.singleShot(50, QtWidgets.QApplication.quit)
+        except Exception:
+            pass
 
     def _refresh_plugin_states(self):
         dir_path = self.edit_dir.text().strip() or DEFAULT_DIR
