@@ -22,7 +22,21 @@ RINPUT_DLL_URL = BASE_RAW + "RInput.dll"
 REBUILTSIMON_DLL_URL = BASE_RAW + "RebuiltSimon.dll"
 CRASHRPT_DLL_URL = BASE_RAW + "CrashRpt.dll"
 VERSION_URL = BASE_RAW + "version.txt"
-
+ASPECT_RESOLUTIONS = {
+    "4:3": [
+        (640, 480), (800, 600), (1024, 768), (1152, 864), (1280, 960), (1440, 1080), (1600, 1200), (1920, 1440)
+    ],
+    "5:4": [
+        (720, 576), (1280, 1024)
+    ],
+    "16:9": [
+        (1280, 720), (1366, 768), (1600, 900), (1920, 1080), (2560, 1440), (3840, 2160)
+    ],
+    "16:10": [
+        (1280, 800), (1440, 900), (1680, 1050), (1920, 1200)
+    ],
+    "Other": []
+}
 
 def dir_exists(path: str) -> bool:
     return os.path.isdir(path)
@@ -30,7 +44,6 @@ def dir_exists(path: str) -> bool:
 
 def file_exists(path: str) -> bool:
     return os.path.isfile(path)
-
 
 class Launcher(QtWidgets.QWidget):
     def __init__(self):
@@ -77,29 +90,48 @@ class Launcher(QtWidgets.QWidget):
 
         gb_res = QtWidgets.QGroupBox("Resolution")
         res_grid = QtWidgets.QGridLayout(gb_res)
-        self.cmb_presets = QtWidgets.QComboBox()
-        self.cmb_presets.addItems([
-            "600 x 400", "800 x 600", "1024 x 768", "1280 x 960",
-            "1280 x 720", "1366 x 768", "1600 x 900",
-            "1920 x 1080", "2560 x 1440", "3840 x 2160"
-        ])
-        self.cmb_presets.setCurrentText("1920 x 1080")
-        self.cmb_presets.currentTextChanged.connect(self.on_preset_changed)
-        res_grid.addWidget(QtWidgets.QLabel("Preset"), 0, 0)
-        res_grid.addWidget(self.cmb_presets, 0, 1, 1, 2)
 
-        self.edit_w = QtWidgets.QLineEdit("1920")
+        self.cmb_aspect = QtWidgets.QComboBox()
+        self.cmb_aspect.addItems(ASPECT_RESOLUTIONS.keys())
+        res_grid.addWidget(QtWidgets.QLabel("Aspect Ratio"), 0, 0)
+        res_grid.addWidget(self.cmb_aspect, 0, 1, 1, 3)
+
+        self.cmb_presets = QtWidgets.QComboBox()
+        self.cmb_presets.currentTextChanged.connect(self.on_preset_changed)
+        self.cmb_aspect.currentTextChanged.connect(self.update_resolution_presets)
+        res_grid.addWidget(QtWidgets.QLabel("Preset"), 1, 0)
+        res_grid.addWidget(self.cmb_presets, 1, 1, 1, 3)
+
+        self.edit_w = QtWidgets.QLineEdit()
         self.edit_w.setValidator(QtGui.QIntValidator(1, 10000, self))
-        self.edit_h = QtWidgets.QLineEdit("1080")
+        self.edit_h = QtWidgets.QLineEdit()
         self.edit_h.setValidator(QtGui.QIntValidator(1, 10000, self))
-        res_grid.addWidget(QtWidgets.QLabel("Width"), 1, 0)
-        res_grid.addWidget(self.edit_w, 1, 1)
-        res_grid.addWidget(QtWidgets.QLabel("Height"), 1, 2)
-        res_grid.addWidget(self.edit_h, 1, 3)
+
+        res_grid.addWidget(QtWidgets.QLabel("Width"), 2, 0)
+        res_grid.addWidget(self.edit_w, 2, 1)
+        res_grid.addWidget(QtWidgets.QLabel("Height"), 2, 2)
+        res_grid.addWidget(self.edit_h, 2, 3)
 
         self.chk_windowed = QtWidgets.QCheckBox("Windowed")
         self.chk_windowed.setChecked(True)
-        res_grid.addWidget(self.chk_windowed, 2, 0, 1, 2)
+        res_grid.addWidget(self.chk_windowed, 3, 0, 1, 4)
+
+        self.chk_cap_native = QtWidgets.QCheckBox("Cap to native resolution")
+        self.chk_cap_native.setChecked(True)
+        res_grid.addWidget(self.chk_cap_native, 4, 0, 1, 4)
+
+        self.cmb_aspect.currentTextChanged.connect(self.update_resolution_presets)
+        self.cmb_aspect.currentTextChanged.connect(self.on_preset_changed)
+
+        screen = QtWidgets.QApplication.primaryScreen().size()
+        self.edit_w.setText(str(screen.width()))
+        self.edit_h.setText(str(screen.height()))
+
+        self.cmb_aspect.setCurrentText("16:9")
+        self.update_resolution_presets()
+        self.cmb_presets.setCurrentText("1920 x 1080")
+        self.on_preset_changed("1920 x 1080")
+
         self._apply_shadow(gb_res)
         main_v.addWidget(gb_res)
 
@@ -127,11 +159,12 @@ class Launcher(QtWidgets.QWidget):
         self.chk_2dmenu = QtWidgets.QCheckBox("2D Menu")
         self.chk_2dmenu.setChecked(True)
         self.chk_rawinput = QtWidgets.QCheckBox("Enable Raw Input")
-        self.chk_nointro.setEnabled(False)
+        self.chk_nointro.setEnabled(True)
         self.chk_rawinput.setEnabled(True)
         misc_grid.addWidget(self.chk_nointro, 1, 0, 1, 2)
         misc_grid.addWidget(self.chk_2dmenu, 2, 0, 1, 2)
         misc_grid.addWidget(self.chk_rawinput, 3, 0, 1, 2)
+        self.chk_nointro.toggled.connect(lambda _: self._update_preview())
         self._apply_shadow(gb_misc)
         main_v.addWidget(gb_misc)
 
@@ -150,7 +183,7 @@ class Launcher(QtWidgets.QWidget):
         self.preview_args.setReadOnly(True)
         self.preview_args.setPlaceholderText("cof.exe -game cryoffear -w 1920 -h 1080 ...")
         self.edit_custom = QtWidgets.QLineEdit()
-        self.edit_custom.setPlaceholderText("Custom arguments (e.g., -novid -console -someflag=value)")
+        self.edit_custom.setPlaceholderText("Custom arguments (e.g., -console -someflag=value)")
         args_v.addWidget(QtWidgets.QLabel("Preview (CMD-style, no path):"))
         args_v.addWidget(self.preview_args)
         args_v.addWidget(QtWidgets.QLabel("Add custom arguments:"))
@@ -216,7 +249,7 @@ class Launcher(QtWidgets.QWidget):
         self.adv_noiseeffect = add_chk("Screen grain effect (cl_noiseeffect)")
         self.adv_vignette = add_chk("Vignette effect (cl_vignette)")
         self.adv_propdistance = add_chk("Prop fade distance (cl_propdistance)")
-        self.adv_nodoubletapdodge = add_chk("Double-tap dodging (cl_nodoubletapdodge)")
+        self.adv_nodoubletapdodge = add_chk("Disable double-tap dodging (cl_nodoubletapdodge)")
         self.adv_bloodeffects = add_chk("Blood particles (cl_bloodeffects)")
         self.adv_posteffects = add_chk("Black and white effect (gl_posteffects)")
         self.adv_cameraeffect = add_chk("Camera and scope effect (cl_cameraeffect)")
@@ -376,12 +409,26 @@ class Launcher(QtWidgets.QWidget):
             except Exception:
                 pass
 
-    def on_preset_changed(self, text: str):
+    def update_resolution_presets(self):
+        aspect = self.cmb_aspect.currentText()
+        self.cmb_presets.clear()
+        presets = ASPECT_RESOLUTIONS.get(aspect, [])
+        if presets:
+            for w, h in presets:
+                self.cmb_presets.addItem(f"{w} x {h}")
+            self.cmb_presets.setCurrentIndex(len(presets)//2)
+            self.on_preset_changed(self.cmb_presets.currentText())
+        else:
+            self.cmb_presets.addItem("Custom")
+
+    def on_preset_changed(self, text):
+        if text == "Custom":
+            return
         try:
-            parts = text.replace(" ", "").split("x")
-            w = int(parts[0]); h = int(parts[1])
-            self.edit_w.setText(str(w))
-            self.edit_h.setText(str(h))
+            w, h = text.replace(" ", "").split("x")
+            self.edit_w.setText(w)
+            self.edit_h.setText(h)
+            self._update_preview()
         except Exception:
             pass
 
@@ -534,15 +581,28 @@ class Launcher(QtWidgets.QWidget):
         self.setStyleSheet(base)
 
     def _collect_flags(self, w: int, h: int):
+        # w = int(self.edit_w.text())
+        # h = int(self.edit_h.text())
+
+        screen = QtWidgets.QApplication.primaryScreen().size()
+        native_w = screen.width()
+        native_h = screen.height()
+
+        if self.chk_cap_native.isChecked():
+            w = min(w, native_w)
+            h = min(h, native_h)
+            
         renderer_flag = "-gl" if self.chk_gl.isChecked() else "-hw"
         flags = [
-            "-game", "cryoffear",
+            "-game", "cryoffear", 
             renderer_flag,
             "-heapsize", str(self.spin_heap.value()),
             "-w", str(w),
             "-h", str(h)
         ]
         flags.append("-windowed" if self.chk_windowed.isChecked() else "-fullscreen")
+        if self.chk_nointro.isChecked():
+            flags.append("-novid")
         if self.chk_2dmenu.isChecked():
             flags.append("-no3dmenu")
         flags.append("-16bpp" if self.chk_16bit.isChecked() else "-32bpp")
